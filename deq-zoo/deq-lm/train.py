@@ -18,7 +18,7 @@ from torch.utils.data.distributed import DistributedSampler
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 # TorchDEQ
 from torchdeq.utils import add_deq_args
@@ -35,7 +35,7 @@ parser = argparse.ArgumentParser(description='PyTorch DEQ Language Model')
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus (default to the WT103 path)')
 parser.add_argument('--dataset', type=str, default='wt103',
-                    choices=['wt103'],
+                    choices=['wt103', 'ptb'],
                     help='dataset name')
 
 parser.add_argument('--n_layer', type=int, default=3,
@@ -163,6 +163,12 @@ parser.add_argument('--load_path', type=str, default='',
                     help='path to load weight')
 parser.add_argument('--name', type=str, default='N/A',
                     help='name of the trial')
+parser.add_argument('--wandb_project', type=str, default='deq-lm',
+                    help='wandb project name')
+parser.add_argument('--wandb_entity', type=str, default=None,
+                    help='wandb entity (username or team name)')
+parser.add_argument('--no_wandb', action='store_true',
+                    help='disable wandb logging')
 
 args = parser.parse_args()
 
@@ -219,10 +225,17 @@ if rank == 0:
 else:
     logging = DummyLogger()
 
-if rank == 0 and not args.debug and not args.eval:
-    writer = SummaryWriter(log_dir=f'log/{args.dataset}/deq_{model_path}', flush_secs=5)
+# Initialize wandb
+if rank == 0 and not args.debug and not args.eval and not args.no_wandb:
+    wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=f"{args.name}-{model_path}",
+        config=vars(args),
+        tags=[args.dataset, "deq-transformer"]
+    )
 else:
-    writer = None
+    wandb.init(mode="disabled")
 
 
 # Load data
@@ -443,12 +456,16 @@ def train():
             train_loss = 0
             log_start_time = time.time()
 
-            if rank == 0 and writer is not None:
-                writer.add_scalar('Result/train_loss', cur_loss.item(), train_step)
-                writer.add_scalar('Result/train_ppl', cur_ppl.item(), train_step)
-                writer.add_scalar('Forward/abs', cur_abs_error, train_step)
-                writer.add_scalar('Forward/rel', cur_rel_error, train_step)
-                writer.add_scalar('Forward/nstep', cur_nstep, train_step)
+            if rank == 0 and not args.no_wandb:
+                wandb.log({
+                    'train/loss': cur_loss.item(),
+                    'train/ppl': cur_ppl.item(),
+                    'train/abs_error': cur_abs_error,
+                    'train/rel_error': cur_rel_error,
+                    'train/nstep': cur_nstep,
+                    'train/lr': optimizer.param_groups[0]['lr'],
+                    'train/step': train_step
+                }, step=train_step)
         
         # Enter evaluation/inference mode once in a while and save the model if needed
         if train_step % args.eval_interval == 0:
@@ -472,9 +489,13 @@ def train():
             logging('-' * 100)
             
             # Logging
-            if rank == 0 and writer is not None:
-                writer.add_scalar('Result/valid_loss', val_loss.item(), train_step)
-                writer.add_scalar('Result/valid_ppl', val_ppl.item(), train_step)
+            if rank == 0 and not args.no_wandb:
+                wandb.log({
+                    'val/loss': val_loss.item(),
+                    'val/ppl': val_ppl.item(),
+                    'val/abs_error': eval_abs_error.item(),
+                    'val/rel_error': eval_rel_error.item()
+                }, step=train_step)
             
             # Save Checkpoints
             if rank == 0:
@@ -527,6 +548,15 @@ if args.eval:
     logging(log_str)
     logging('-' * 100)
     
+    # Log validation results to wandb
+    if rank == 0 and not args.no_wandb:
+        wandb.log({
+            'eval/val_loss': val_loss.item(),
+            'eval/val_ppl': val_ppl.item(),
+            'eval/val_abs_error': eval_abs_error.item(),
+            'eval/val_rel_error': eval_rel_error.item()
+        })
+    
     eval_start_time = time.time()
     stats = evaluate(te_iter)
     torch.cuda.synchronize()
@@ -543,6 +573,16 @@ if args.eval:
             elapsed, eval_abs_error.item(), eval_rel_error.item(), test_loss.item(), test_ppl.item())
     logging(log_str)
     logging('-' * 100)
+    
+    # Log test results to wandb (eval mode)
+    if rank == 0 and not args.no_wandb:
+        wandb.log({
+            'eval/test_loss': test_loss.item(),
+            'eval/test_ppl': test_ppl.item(),
+            'eval/test_abs_error': eval_abs_error.item(),
+            'eval/test_rel_error': eval_rel_error.item()
+        })
+        wandb.finish()
 
     sys.exit(0)
 
@@ -582,5 +622,15 @@ log_str = '| Test | time: {:5.2f}s ' \
         elapsed, eval_abs_error.item(), eval_rel_error.item(), test_loss.item(), test_ppl.item())
 logging(log_str)
 logging('-' * 100)
+
+# Log final test results to wandb
+if rank == 0 and not args.no_wandb:
+    wandb.log({
+        'test/loss': test_loss.item(),
+        'test/ppl': test_ppl.item(),
+        'test/abs_error': eval_abs_error.item(),
+        'test/rel_error': eval_rel_error.item()
+    })
+    wandb.finish()
 
 
