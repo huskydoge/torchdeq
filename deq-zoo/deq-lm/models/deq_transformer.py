@@ -313,4 +313,8 @@ class DEQTransformerLM(nn.Module):
         loss = fp_correction(self.crit, (z_pred, target), gamma=self.args.gamma)
 
         new_mems = self._update_mems(z_now, z_hist, u_cat, m_len, q_len)
-        return loss, new_mems, info
+
+        if kwargs.get('return_loss_only', False):
+            return loss
+        else:
+            return loss, new_mems, info
