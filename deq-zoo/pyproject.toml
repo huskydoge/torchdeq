@@ -3,13 +3,16 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "deq-zoo"
+name = "deq_zoo"                 # distribution name; import name is separate
 version = "0.0.1"
 requires-python = ">=3.9"
+dependencies = [
+    "tqdm>=4.67.1",
+]
 
+# Discover the Python package named "deq_lm"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["deq_lm", "deq_lm.*"]
 
-[tool.setuptools.package-dir]
-deq_lm = "deq-lm"
+
